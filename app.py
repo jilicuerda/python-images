@@ -1,31 +1,22 @@
 import os
-from flask import Flask, render_template, request, jsonify
+import io
+from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from PIL import Image
 
 app = Flask(__name__)
-
-# We will save uploads inside static/uploads so the frontend can easily read them
-UPLOAD_FOLDER = 'static/uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Ensure the upload folder exists when the app starts
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        # Check if the post request has both file parts
-        if 'file_a' not in request.files or 'file_b' not in request.files:
-            return "Missing files in request", 400
-        
-        file_a = request.files['file_a']
-        file_b = request.files['file_b']
+        file_a = request.files.get('file_a')
+        file_b = request.files.get('file_b')
 
-        if file_a.filename == '' or file_b.filename == '':
+        if not file_a or not file_b or file_a.filename == '' or file_b.filename == '':
             return "Please select both files", 400
 
-        # Secure the filenames and save them to the server
         filename_a = secure_filename(file_a.filename)
         filename_b = secure_filename(file_b.filename)
         
@@ -35,19 +26,47 @@ def index():
         file_a.save(path_a)
         file_b.save(path_b)
 
-        # Re-render the page, but this time pass the saved filenames to activate the canvas
-        return render_template('index.html', image_a=filename_a, image_b=filename_b)
+        # Get the total number of slices (depth) of the 3D images
+        # We assume Image A is the 3D stack we want to slice through
+        try:
+            img_3d = Image.open(path_a)
+            total_slices = getattr(img_3d, "n_frames", 1) 
+        except Exception:
+            total_slices = 1 # Fallback if it's just a 2D image
 
-    # If it's a GET request (first time visiting the page), just show the upload form
+        return render_template('index.html', 
+                               image_a=filename_a, 
+                               image_b=filename_b,
+                               total_slices=total_slices)
+
     return render_template('index.html', image_a=None, image_b=None)
+
+# --- NEW: Dynamic 3D Slicing Endpoint ---
+@app.route('/slice/<filename>/<int:z_index>')
+def get_slice(filename, z_index):
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    try:
+        img = Image.open(file_path)
+        # Go to the requested Z-slice in the 3D stack
+        if hasattr(img, 'n_frames') and z_index < img.n_frames:
+            img.seek(z_index)
+        
+        # Convert the specific slice to PNG in memory so the browser can read it
+        img_io = io.BytesIO()
+        img.convert("RGBA").save(img_io, 'PNG')
+        img_io.seek(0)
+        
+        return send_file(img_io, mimetype='image/png')
+    except Exception as e:
+        return str(e), 500
 
 @app.route('/align', methods=['POST'])
 def align_images():
     data = request.json
     offset_x = data.get('x', 0)
     offset_y = data.get('y', 0)
-    
-    # We need to know which files we are aligning
+    z_index = data.get('z_index', 0) # Get the specific slice they aligned
     filename_a = data.get('filename_a')
     filename_b = data.get('filename_b')
 
@@ -55,18 +74,24 @@ def align_images():
         path_a = os.path.join(app.config['UPLOAD_FOLDER'], filename_a)
         path_b = os.path.join(app.config['UPLOAD_FOLDER'], filename_b)
         
-        img_a = Image.open(path_a)
+        # Open Base
         img_b = Image.open(path_b)
+        if hasattr(img_b, 'n_frames'):
+            img_b.seek(0) # Assuming we align to the first slice of the base, adjust as needed
+
+        # Open Overlay and seek to the exact slice the user was looking at
+        img_a = Image.open(path_a)
+        if hasattr(img_a, 'n_frames'):
+            img_a.seek(z_index)
 
         aligned_canvas = Image.new("RGBA", img_b.size)
+        aligned_canvas.paste(img_b.convert("RGBA"), (0, 0))
+        aligned_canvas.paste(img_a.convert("RGBA"), (offset_x, offset_y))
         
-        aligned_canvas.paste(img_b, (0, 0))
-        aligned_canvas.paste(img_a, (offset_x, offset_y))
-        
-        output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'aligned_result.png')
+        output_path = os.path.join(app.config['UPLOAD_FOLDER'], f'aligned_result_slice_{z_index}.png')
         aligned_canvas.save(output_path)
         
-        return jsonify({"status": "success", "message": "Images aligned and saved successfully!"})
+        return jsonify({"status": "success", "message": f"Slice {z_index} aligned and saved!"})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
