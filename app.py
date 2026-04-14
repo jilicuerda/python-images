@@ -1,5 +1,7 @@
 import os
 import io
+import numpy as np
+import tifffile
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from PIL import Image
@@ -8,51 +10,95 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+def parse_mhd(mhd_path):
+    """Lit le fichier MHD pour trouver les dimensions et le fichier RAW associé."""
+    header = {}
+    with open(mhd_path, 'r') as f:
+        for line in f:
+            if '=' in line:
+                key, val = line.split('=', 1)
+                header[key.strip()] = val.strip()
+    
+    dims = list(map(int, header['DimSize'].split())) # [X, Y, Z]
+    dtype = np.uint16 if header['ElementType'] == 'MET_USHORT' else np.uint8
+    raw_filename = header['ElementDataFile']
+    
+    return dims, dtype, raw_filename
+
+def get_slice_data(file_path, z_index):
+    """Extrait une matrice 2D (tranche) depuis un TIFF ou un duo MHD/RAW."""
+    if file_path.lower().endswith('.mhd'):
+        dims, dtype, raw_filename = parse_mhd(file_path)
+        raw_path = os.path.join(os.path.dirname(file_path), raw_filename)
+        
+        # Numpy Memmap : Lit uniquement la tranche requise sans saturer la RAM !
+        shape = (dims[2], dims[1], dims[0]) # (Z, Y, X)
+        volume = np.memmap(raw_path, dtype=dtype, mode='r', shape=shape)
+        return volume[z_index, :, :], dims[2]
+        
+    else: # Fallback pour les TIFFs multipages
+        data = tifffile.imread(file_path, key=z_index)
+        with tifffile.TiffFile(file_path) as tif:
+            total_slices = len(tif.pages)
+        return data, total_slices
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        file_a = request.files.get('file_a')
-        file_b = request.files.get('file_b')
+        # Permet de récupérer plusieurs fichiers (ex: le .mhd ET le .raw)
+        files_a = request.files.getlist('files_a')
+        files_b = request.files.getlist('files_b')
 
-        if not file_a or not file_b or file_a.filename == '' or file_b.filename == '':
-            return "Please select both files", 400
+        if not files_a or not files_b or files_a[0].filename == '':
+            return "Veuillez sélectionner les fichiers", 400
 
-        filename_a = secure_filename(file_a.filename)
-        filename_b = secure_filename(file_b.filename)
-        
-        path_a = os.path.join(app.config['UPLOAD_FOLDER'], filename_a)
-        path_b = os.path.join(app.config['UPLOAD_FOLDER'], filename_b)
-        
-        file_a.save(path_a)
-        file_b.save(path_b)
+        main_filename_a = None
+        main_filename_b = None
 
-        # Get the total number of slices (depth) of the 3D images
-        # We assume Image A is the 3D stack we want to slice through
+        # Sauvegarde tous les fichiers de l'Échantillon A (MHD + RAW)
+        for f in files_a:
+            fname = secure_filename(f.filename)
+            f.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
+            if fname.lower().endswith(('.mhd', '.tif', '.tiff')):
+                main_filename_a = fname
+
+        # Sauvegarde tous les fichiers de l'Échantillon B
+        for f in files_b:
+            fname = secure_filename(f.filename)
+            f.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
+            if fname.lower().endswith(('.mhd', '.tif', '.tiff')):
+                main_filename_b = fname
+
+        if not main_filename_a or not main_filename_b:
+             return "Fichier principal (MHD ou TIFF) introuvable dans l'upload.", 400
+
+        # Obtenir le nombre total de tranches pour le slider
+        path_a = os.path.join(app.config['UPLOAD_FOLDER'], main_filename_a)
         try:
-            img_3d = Image.open(path_a)
-            total_slices = getattr(img_3d, "n_frames", 1) 
+            _, total_slices = get_slice_data(path_a, 0)
         except Exception:
-            total_slices = 1 # Fallback if it's just a 2D image
+            total_slices = 1 
 
         return render_template('index.html', 
-                               image_a=filename_a, 
-                               image_b=filename_b,
+                               image_a=main_filename_a, 
+                               image_b=main_filename_b,
                                total_slices=total_slices)
 
     return render_template('index.html', image_a=None, image_b=None)
 
-# --- NEW: Dynamic 3D Slicing Endpoint ---
 @app.route('/slice/<filename>/<int:z_index>')
 def get_slice(filename, z_index):
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     
     try:
-        img = Image.open(file_path)
-        # Go to the requested Z-slice in the 3D stack
-        if hasattr(img, 'n_frames') and z_index < img.n_frames:
-            img.seek(z_index)
+        data, _ = get_slice_data(file_path, z_index)
         
-        # Convert the specific slice to PNG in memory so the browser can read it
+        # Normalisation visuelle pour le navigateur (16-bit vers 8-bit)
+        if data.dtype == np.uint16:
+            # On utilise un ratio intelligent pour éviter une image toute noire
+            data = (data / np.max(data) * 255).astype(np.uint8) if np.max(data) > 0 else data.astype(np.uint8)
+            
+        img = Image.fromarray(data)
         img_io = io.BytesIO()
         img.convert("RGBA").save(img_io, 'PNG')
         img_io.seek(0)
@@ -66,7 +112,7 @@ def align_images():
     data = request.json
     offset_x = data.get('x', 0)
     offset_y = data.get('y', 0)
-    z_index = data.get('z_index', 0) # Get the specific slice they aligned
+    z_index = data.get('z_index', 0) 
     filename_a = data.get('filename_a')
     filename_b = data.get('filename_b')
 
@@ -74,24 +120,33 @@ def align_images():
         path_a = os.path.join(app.config['UPLOAD_FOLDER'], filename_a)
         path_b = os.path.join(app.config['UPLOAD_FOLDER'], filename_b)
         
-        # Open Base
-        img_b = Image.open(path_b)
-        if hasattr(img_b, 'n_frames'):
-            img_b.seek(0) # Assuming we align to the first slice of the base, adjust as needed
+        # 1. Lire les matrices brutes mathématiques
+        slice_b, _ = get_slice_data(path_b, 0) 
+        slice_a, _ = get_slice_data(path_a, z_index)
 
-        # Open Overlay and seek to the exact slice the user was looking at
-        img_a = Image.open(path_a)
-        if hasattr(img_a, 'n_frames'):
-            img_a.seek(z_index)
+        # 2. Créer un canvas vierge 16-bit
+        aligned_data = np.zeros_like(slice_b, dtype=slice_b.dtype)
 
-        aligned_canvas = Image.new("RGBA", img_b.size)
-        aligned_canvas.paste(img_b.convert("RGBA"), (0, 0))
-        aligned_canvas.paste(img_a.convert("RGBA"), (offset_x, offset_y))
+        # 3. Calculer les bordures pour le décalage
+        y_start = max(0, offset_y)
+        y_end = min(slice_b.shape[0], offset_y + slice_a.shape[0])
+        x_start = max(0, offset_x)
+        x_end = min(slice_b.shape[1], offset_x + slice_a.shape[1])
+
+        a_y_start = max(0, -offset_y)
+        a_y_end = a_y_start + (y_end - y_start)
+        a_x_start = max(0, -offset_x)
+        a_x_end = a_x_start + (x_end - x_start)
+
+        # 4. Coller les données
+        if y_end > y_start and x_end > x_start:
+            aligned_data[y_start:y_end, x_start:x_end] = slice_a[a_y_start:a_y_end, a_x_start:a_x_end]
+
+        # 5. Exporter en RAW 16-bit pur
+        raw_output_path = os.path.join(app.config['UPLOAD_FOLDER'], f'aligned_slice_{z_index}.raw')
+        aligned_data.tofile(raw_output_path)
         
-        output_path = os.path.join(app.config['UPLOAD_FOLDER'], f'aligned_result_slice_{z_index}.png')
-        aligned_canvas.save(output_path)
-        
-        return jsonify({"status": "success", "message": f"Slice {z_index} aligned and saved!"})
+        return jsonify({"status": "success", "message": f"Tranche {z_index} alignée et exportée en RAW 16-bit !"})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
