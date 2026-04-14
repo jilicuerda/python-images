@@ -3,40 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Aligner</title>
+    <title>3D Rock Sample Aligner</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; margin-top: 50px; }
+        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; margin-top: 20px; }
         .upload-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; }
         .upload-container div { margin-bottom: 15px; }
-        canvas { 
-            border: 1px solid #ccc; 
-            cursor: grab; 
-            background: white;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-            margin-top: 20px;
-        }
+        canvas { border: 1px solid #ccc; cursor: grab; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-top: 10px; }
         canvas:active { cursor: grabbing; }
-        .controls { margin-top: 20px; }
+        .controls { margin-top: 20px; background: white; padding: 15px; display: inline-block; border-radius: 8px; }
+        .slider-container { margin-bottom: 15px; font-weight: bold; }
+        input[type=range] { width: 300px; }
         button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px;}
         button:hover { background: #0056b3; }
-        .instructions { color: #666; margin-bottom: 20px; }
     </style>
 </head>
 <body>
 
-    <h2>Sample Aligner</h2>
+    <h2>3D Sample Slicer & Aligner</h2>
 
     {% if not image_a or not image_b %}
     <div class="upload-container">
-        <p>Upload your samples to begin alignment.</p>
+        <p>Upload your geological samples (TIFF stacks or standard images).</p>
         <form action="/" method="POST" enctype="multipart/form-data">
             <div>
-                <label><strong>Image A (Overlay/Moving):</strong></label><br>
-                <input type="file" name="file_a" accept="image/*" required>
+                <label><strong>Image A (3D Overlay):</strong></label><br>
+                <input type="file" name="file_a" required>
             </div>
             <div>
-                <label><strong>Image B (Base/Static):</strong></label><br>
-                <input type="file" name="file_b" accept="image/*" required>
+                <label><strong>Image B (Base/Reference):</strong></label><br>
+                <input type="file" name="file_b" required>
             </div>
             <button type="submit">Upload and Align</button>
         </form>
@@ -44,15 +39,18 @@
     {% endif %}
 
     {% if image_a and image_b %}
-    <p class="instructions">Drag the overlay image with your mouse. Use <strong>Arrow Keys</strong> for 1-pixel precision.</p>
+    
+    <div class="slider-container">
+        <label for="zSlider">Z-Axis Slice (Depth): <span id="zValue">0</span></label><br>
+        <input type="range" id="zSlider" min="0" max="{{ total_slices - 1 }}" value="0" oninput="updateSlice(this.value)">
+    </div>
 
     <canvas id="alignmentCanvas" width="800" height="600" tabindex="0"></canvas>
 
     <div class="controls">
-        <p>Current Offset: X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
+        <p>Offset: X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
         <button onclick="saveAlignment()">Save Final Alignment</button>
-        <br><br>
-        <a href="/">Upload new images</a>
+        <br><br><a href="/">Upload new images</a>
     </div>
 
     <script>
@@ -60,21 +58,23 @@
         const ctx = canvas.getContext('2d');
         const valX = document.getElementById('valX');
         const valY = document.getElementById('valY');
+        const zValueDisplay = document.getElementById('zValue');
 
-        let imgB = new Image(); // The static base image
-        let imgA = new Image(); // The moving overlay image
+        let imgB = new Image(); 
+        let imgA = new Image(); 
 
-        // State variables
         let offsetX = 0;
         let offsetY = 0;
+        let currentZ = 0;
         let isDragging = false;
         let startX, startY;
 
-        // Load images (served by Flask from the 'static/uploads' folder)
-        imgB.src = "/static/uploads/{{ image_b }}";
-        imgA.src = "/static/uploads/{{ image_a }}";
+        // Load base image (slice 0 by default)
+        imgB.src = `/slice/{{ image_b }}/0`;
+        
+        // Initial load for overlay image (slice 0)
+        updateSlice(0);
 
-        // Resize canvas to match the base image once it loads
         imgB.onload = () => {
             canvas.width = imgB.width;
             canvas.height = imgB.height;
@@ -82,54 +82,48 @@
         };
         imgA.onload = draw;
 
+        // --- NEW: Fetch new slice from Python when slider moves ---
+        function updateSlice(z) {
+            currentZ = z;
+            zValueDisplay.innerText = z;
+            // Appending a timestamp prevents the browser from caching the old slice image
+            imgA.src = `/slice/{{ image_a }}/${z}?t=` + new Date().getTime();
+        }
+
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw static base image
             if (imgB.complete) {
                 ctx.globalAlpha = 1.0;
                 ctx.drawImage(imgB, 0, 0);
             }
-            
-            // Draw moving image with 50% opacity
             if (imgA.complete) {
                 ctx.globalAlpha = 0.5;
                 ctx.drawImage(imgA, offsetX, offsetY);
             }
-
-            // Update text displays
             valX.innerText = offsetX;
             valY.innerText = offsetY;
         }
 
-        // --- Mouse Dragging Logic ---
+        // --- Dragging & Keyboard Logic Remains the Same ---
         canvas.addEventListener('mousedown', (e) => {
             isDragging = true;
-            // Get coordinates relative to the canvas
             const rect = canvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            
-            startX = mouseX - offsetX;
-            startY = mouseY - offsetY;
+            startX = (e.clientX - rect.left) - offsetX;
+            startY = (e.clientY - rect.top) - offsetY;
             canvas.style.cursor = "grabbing";
         });
 
         canvas.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
             const rect = canvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            
-            offsetX = mouseX - startX;
-            offsetY = mouseY - startY;
+            offsetX = (e.clientX - rect.left) - startX;
+            offsetY = (e.clientY - rect.top) - startY;
             draw();
         });
 
         canvas.addEventListener('mouseup', () => { isDragging = false; canvas.style.cursor = "grab"; });
         canvas.addEventListener('mouseleave', () => { isDragging = false; });
 
-        // --- Keyboard Pixel Nudging Logic ---
         canvas.focus();
         canvas.addEventListener('keydown', (e) => {
             if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
@@ -142,7 +136,6 @@
             }
         });
 
-        // --- Send Data back to Python ---
         function saveAlignment() {
             fetch('/align', {
                 method: 'POST',
@@ -150,7 +143,8 @@
                 body: JSON.stringify({ 
                     x: offsetX, 
                     y: offsetY,
-                    filename_a: "{{ image_a }}", // Tell Python which files to use
+                    z_index: currentZ, // Tell Python which exact slice was chosen
+                    filename_a: "{{ image_a }}",
                     filename_b: "{{ image_b }}"
                 })
             })
