@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Aligner</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; }
+        canvas { 
+            border: 1px solid #ccc; 
+            cursor: grab; 
+            background: white;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        canvas:active { cursor: grabbing; }
+        .controls { margin-top: 20px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px;}
+        button:hover { background: #0056b3; }
+        .instructions { color: #666; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+    <h2>Sample Aligner</h2>
+    <p class="instructions">Drag the overlay image with your mouse. Use <strong>Arrow Keys</strong> for 1-pixel precision.</p>
+
+    <canvas id="alignmentCanvas" width="600" height="400" tabindex="0"></canvas>
+
+    <div class="controls">
+        <p>Current Offset: X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
+        <button onclick="saveAlignment()">Save Alignment</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('alignmentCanvas');
+        const ctx = canvas.getContext('2d');
+        const valX = document.getElementById('valX');
+        const valY = document.getElementById('valY');
+
+        let imgB = new Image(); // The static base image
+        let imgA = new Image(); // The moving overlay image
+
+        // State variables
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let startX, startY;
+
+        // Load images (served by Flask from the 'static' folder)
+        imgB.src = "/static/{{ image_b }}";
+        imgA.src = "/static/{{ image_a }}";
+
+        // Redraw canvas whenever an image loads or moves
+        imgB.onload = draw;
+        imgA.onload = draw;
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw static base image
+            if (imgB.complete) {
+                ctx.globalAlpha = 1.0;
+                ctx.drawImage(imgB, 0, 0);
+            }
+            
+            // Draw moving image with 50% opacity so you can see both
+            if (imgA.complete) {
+                ctx.globalAlpha = 0.5;
+                ctx.drawImage(imgA, offsetX, offsetY);
+            }
+
+            // Update text displays
+            valX.innerText = offsetX;
+            valY.innerText = offsetY;
+        }
+
+        // --- Mouse Dragging Logic ---
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.offsetX - offsetX;
+            startY = e.offsetY - offsetY;
+            canvas.style.cursor = "grabbing";
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            offsetX = e.offsetX - startX;
+            offsetY = e.offsetY - startY;
+            draw();
+        });
+
+        canvas.addEventListener('mouseup', () => { isDragging = false; canvas.style.cursor = "grab"; });
+        canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+        // --- Keyboard Pixel Nudging Logic ---
+        // Ensure canvas can receive keyboard events
+        canvas.focus();
+        canvas.addEventListener('keydown', (e) => {
+            if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+                e.preventDefault(); // Stop page scrolling
+                if (e.key === "ArrowUp") offsetY -= 1;
+                if (e.key === "ArrowDown") offsetY += 1;
+                if (e.key === "ArrowLeft") offsetX -= 1;
+                if (e.key === "ArrowRight") offsetX += 1;
+                draw();
+            }
+        });
+
+        // --- Send Data back to Python ---
+        function saveAlignment() {
+            fetch('/align', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x: offsetX, y: offsetY })
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error:', error));
+        }
+    </script>
+</body>
+</html>
