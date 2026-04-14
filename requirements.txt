@@ -2,3 +2,5 @@ Flask>=3.0.0
 Pillow>=11.0.0
 Werkzeug>=3.0.0
 gunicorn>=22.0.0
+numpy>=1.26.0
+tifffile>=2023.9.26s
