@@ -1,39 +1,42 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Rock Sample Aligner</title>
+    <title>Aligneur de Roches 3D</title>
     <style>
         body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; margin-top: 20px; }
-        .upload-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; }
-        .upload-container div { margin-bottom: 15px; }
+        .upload-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; text-align: left; }
+        .upload-container div { margin-bottom: 20px; }
         canvas { border: 1px solid #ccc; cursor: grab; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-top: 10px; }
         canvas:active { cursor: grabbing; }
         .controls { margin-top: 20px; background: white; padding: 15px; display: inline-block; border-radius: 8px; }
         .slider-container { margin-bottom: 15px; font-weight: bold; }
         input[type=range] { width: 300px; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px;}
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; width: 100%;}
         button:hover { background: #0056b3; }
+        .help-text { font-size: 0.85em; color: #666; margin-top: 5px; display: block; }
     </style>
 </head>
 <body>
 
-    <h2>3D Sample Slicer & Aligner</h2>
+    <h2>Aligneur de Carottes Géologiques 3D</h2>
 
     {% if not image_a or not image_b %}
     <div class="upload-container">
-        <p>Upload your geological samples (TIFF stacks or standard images).</p>
+        <p>Uploadez vos échantillons (Si format MHD, sélectionnez le .mhd ET le .raw ensemble).</p>
         <form action="/" method="POST" enctype="multipart/form-data">
             <div>
-                <label><strong>Image A (3D Overlay):</strong></label><br>
-                <input type="file" name="file_a" required>
+                <label><strong>Échantillon A (Image Mobile / 3D) :</strong></label><br>
+                <input type="file" name="files_a" multiple required>
+                <span class="help-text">Sélectionnez le(s) fichier(s) correspondant à l'image à aligner.</span>
             </div>
             <div>
-                <label><strong>Image B (Base/Reference):</strong></label><br>
-                <input type="file" name="file_b" required>
+                <label><strong>Échantillon B (Référence Fixe) :</strong></label><br>
+                <input type="file" name="files_b" multiple required>
+                <span class="help-text">Sélectionnez le(s) fichier(s) de base.</span>
             </div>
-            <button type="submit">Upload and Align</button>
+            <button type="submit">Charger les Échantillons</button>
         </form>
     </div>
     {% endif %}
@@ -41,16 +44,16 @@
     {% if image_a and image_b %}
     
     <div class="slider-container">
-        <label for="zSlider">Z-Axis Slice (Depth): <span id="zValue">0</span></label><br>
+        <label for="zSlider">Profondeur de la tranche (Z) : <span id="zValue">0</span></label><br>
         <input type="range" id="zSlider" min="0" max="{{ total_slices - 1 }}" value="0" oninput="updateSlice(this.value)">
     </div>
 
     <canvas id="alignmentCanvas" width="800" height="600" tabindex="0"></canvas>
 
     <div class="controls">
-        <p>Offset: X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
-        <button onclick="saveAlignment()">Save Final Alignment</button>
-        <br><br><a href="/">Upload new images</a>
+        <p>Décalage : X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
+        <button onclick="saveAlignment()">Sauvegarder l'Alignement</button>
+        <br><br><a href="/" style="display: block; text-align: center;">Charger de nouveaux échantillons</a>
     </div>
 
     <script>
@@ -69,10 +72,7 @@
         let isDragging = false;
         let startX, startY;
 
-        // Load base image (slice 0 by default)
         imgB.src = `/slice/{{ image_b }}/0`;
-        
-        // Initial load for overlay image (slice 0)
         updateSlice(0);
 
         imgB.onload = () => {
@@ -82,11 +82,9 @@
         };
         imgA.onload = draw;
 
-        // --- NEW: Fetch new slice from Python when slider moves ---
         function updateSlice(z) {
             currentZ = z;
             zValueDisplay.innerText = z;
-            // Appending a timestamp prevents the browser from caching the old slice image
             imgA.src = `/slice/{{ image_a }}/${z}?t=` + new Date().getTime();
         }
 
@@ -104,7 +102,6 @@
             valY.innerText = offsetY;
         }
 
-        // --- Dragging & Keyboard Logic Remains the Same ---
         canvas.addEventListener('mousedown', (e) => {
             isDragging = true;
             const rect = canvas.getBoundingClientRect();
@@ -143,14 +140,14 @@
                 body: JSON.stringify({ 
                     x: offsetX, 
                     y: offsetY,
-                    z_index: currentZ, // Tell Python which exact slice was chosen
+                    z_index: currentZ, 
                     filename_a: "{{ image_a }}",
                     filename_b: "{{ image_b }}"
                 })
             })
             .then(response => response.json())
             .then(data => alert(data.message))
-            .catch(error => console.error('Error:', error));
+            .catch(error => console.error('Erreur:', error));
         }
     </script>
     {% endif %}
