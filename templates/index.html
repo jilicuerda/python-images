@@ -5,12 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Image Aligner</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; }
+        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; margin-top: 50px; }
+        .upload-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; }
+        .upload-container div { margin-bottom: 15px; }
         canvas { 
             border: 1px solid #ccc; 
             cursor: grab; 
             background: white;
             box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            margin-top: 20px;
         }
         canvas:active { cursor: grabbing; }
         .controls { margin-top: 20px; }
@@ -22,13 +25,34 @@
 <body>
 
     <h2>Sample Aligner</h2>
+
+    {% if not image_a or not image_b %}
+    <div class="upload-container">
+        <p>Upload your samples to begin alignment.</p>
+        <form action="/" method="POST" enctype="multipart/form-data">
+            <div>
+                <label><strong>Image A (Overlay/Moving):</strong></label><br>
+                <input type="file" name="file_a" accept="image/*" required>
+            </div>
+            <div>
+                <label><strong>Image B (Base/Static):</strong></label><br>
+                <input type="file" name="file_b" accept="image/*" required>
+            </div>
+            <button type="submit">Upload and Align</button>
+        </form>
+    </div>
+    {% endif %}
+
+    {% if image_a and image_b %}
     <p class="instructions">Drag the overlay image with your mouse. Use <strong>Arrow Keys</strong> for 1-pixel precision.</p>
 
-    <canvas id="alignmentCanvas" width="600" height="400" tabindex="0"></canvas>
+    <canvas id="alignmentCanvas" width="800" height="600" tabindex="0"></canvas>
 
     <div class="controls">
         <p>Current Offset: X: <span id="valX">0</span>px, Y: <span id="valY">0</span>px</p>
-        <button onclick="saveAlignment()">Save Alignment</button>
+        <button onclick="saveAlignment()">Save Final Alignment</button>
+        <br><br>
+        <a href="/">Upload new images</a>
     </div>
 
     <script>
@@ -46,12 +70,16 @@
         let isDragging = false;
         let startX, startY;
 
-        // Load images (served by Flask from the 'static' folder)
-        imgB.src = "/static/{{ image_b }}";
-        imgA.src = "/static/{{ image_a }}";
+        // Load images (served by Flask from the 'static/uploads' folder)
+        imgB.src = "/static/uploads/{{ image_b }}";
+        imgA.src = "/static/uploads/{{ image_a }}";
 
-        // Redraw canvas whenever an image loads or moves
-        imgB.onload = draw;
+        // Resize canvas to match the base image once it loads
+        imgB.onload = () => {
+            canvas.width = imgB.width;
+            canvas.height = imgB.height;
+            draw();
+        };
         imgA.onload = draw;
 
         function draw() {
@@ -63,7 +91,7 @@
                 ctx.drawImage(imgB, 0, 0);
             }
             
-            // Draw moving image with 50% opacity so you can see both
+            // Draw moving image with 50% opacity
             if (imgA.complete) {
                 ctx.globalAlpha = 0.5;
                 ctx.drawImage(imgA, offsetX, offsetY);
@@ -77,15 +105,24 @@
         // --- Mouse Dragging Logic ---
         canvas.addEventListener('mousedown', (e) => {
             isDragging = true;
-            startX = e.offsetX - offsetX;
-            startY = e.offsetY - offsetY;
+            // Get coordinates relative to the canvas
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            startX = mouseX - offsetX;
+            startY = mouseY - offsetY;
             canvas.style.cursor = "grabbing";
         });
 
         canvas.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            offsetX = e.offsetX - startX;
-            offsetY = e.offsetY - startY;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            offsetX = mouseX - startX;
+            offsetY = mouseY - startY;
             draw();
         });
 
@@ -93,11 +130,10 @@
         canvas.addEventListener('mouseleave', () => { isDragging = false; });
 
         // --- Keyboard Pixel Nudging Logic ---
-        // Ensure canvas can receive keyboard events
         canvas.focus();
         canvas.addEventListener('keydown', (e) => {
             if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-                e.preventDefault(); // Stop page scrolling
+                e.preventDefault(); 
                 if (e.key === "ArrowUp") offsetY -= 1;
                 if (e.key === "ArrowDown") offsetY += 1;
                 if (e.key === "ArrowLeft") offsetX -= 1;
@@ -111,12 +147,18 @@
             fetch('/align', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x: offsetX, y: offsetY })
+                body: JSON.stringify({ 
+                    x: offsetX, 
+                    y: offsetY,
+                    filename_a: "{{ image_a }}", // Tell Python which files to use
+                    filename_b: "{{ image_b }}"
+                })
             })
             .then(response => response.json())
             .then(data => alert(data.message))
             .catch(error => console.error('Error:', error));
         }
     </script>
+    {% endif %}
 </body>
 </html>
